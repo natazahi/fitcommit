@@ -1,0 +1,212 @@
+import os
+from flask import Flask, render_template, request, jsonify
+from flask_cors import CORS
+import pymysql
+import pymysql.cursors
+from werkzeug.security import generate_password_hash, check_password_hash
+
+app = Flask(__name__)
+CORS(app)
+
+# Konfigurasi Database (Mendukung Environment Variables dari Cloud Hosting)
+DB_HOST = os.environ.get("DB_HOST", "localhost")
+DB_USER = os.environ.get("DB_USER", "root")
+DB_PASSWORD = os.environ.get("DB_PASSWORD", "")
+DB_NAME = os.environ.get("DB_NAME", "fitcommit_db")
+DB_PORT = int(os.environ.get("DB_PORT", 3306))
+
+def get_base_connection():
+    return pymysql.connect(
+        host=DB_HOST,
+        user=DB_USER,
+        password=DB_PASSWORD,
+        port=DB_PORT,
+        cursorclass=pymysql.cursors.DictCursor
+    )
+
+def init_db():
+    try:
+        conn = get_base_connection()
+        with conn.cursor() as c:
+            c.execute(f"CREATE DATABASE IF NOT EXISTS {DB_NAME}")
+            c.execute(f"USE {DB_NAME}")
+            
+            c.execute('''CREATE TABLE IF NOT EXISTS users (
+                            id INT AUTO_INCREMENT PRIMARY KEY, 
+                            email VARCHAR(255) UNIQUE, 
+                            password VARCHAR(255)
+                        )''')
+            c.execute('''CREATE TABLE IF NOT EXISTS profiles (
+                            user_id INT PRIMARY KEY, 
+                            nama VARCHAR(255), 
+                            usia INT, 
+                            gender VARCHAR(10), 
+                            tb FLOAT, 
+                            bb FLOAT, 
+                            jenis_program VARCHAR(50), 
+                            target_bb FLOAT, 
+                            program_start_date VARCHAR(50), 
+                            foto_profil LONGTEXT
+                        )''')
+            c.execute('''CREATE TABLE IF NOT EXISTS plans (
+                            id INT AUTO_INCREMENT PRIMARY KEY, 
+                            user_id INT, 
+                            tanggal VARCHAR(50), 
+                            olahraga VARCHAR(100), 
+                            jam_mulai VARCHAR(20), 
+                            selesai BOOLEAN, 
+                            durasi FLOAT, 
+                            jarak FLOAT, 
+                            kalori_bakar INT, 
+                            foto_bukti LONGTEXT
+                        )''')
+            c.execute('''CREATE TABLE IF NOT EXISTS foods (
+                            id INT AUTO_INCREMENT PRIMARY KEY, 
+                            user_id INT, 
+                            tanggal VARCHAR(50), 
+                            kategori VARCHAR(50), 
+                            nama_makanan VARCHAR(255), 
+                            kalori INT
+                        )''')
+            conn.commit()
+        conn.close()
+    except Exception as e:
+        print("Error Inisialisasi Database:", e)
+
+init_db()
+
+def get_db_connection():
+    return pymysql.connect(
+        host=DB_HOST,
+        user=DB_USER,
+        password=DB_PASSWORD,
+        database=DB_NAME,
+        port=DB_PORT,
+        cursorclass=pymysql.cursors.DictCursor
+    )
+
+# --- (Sisa endpoint route app.route tetap sama seperti sebelumnya) ---
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+@app.route('/api/register', methods=['POST'])
+def register():
+    data = request.json
+    email = data.get('email')
+    password = data.get('password')
+    confirm = data.get('confirm_password')
+
+    if not email or not password:
+        return jsonify({"msg": "Email dan password wajib diisi!"}), 400
+    if password != confirm:
+        return jsonify({"msg": "Konfirmasi password tidak cocok!"}), 400
+
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as c:
+            c.execute('SELECT * FROM users WHERE email = %s', (email,))
+            if c.fetchone():
+                conn.close()
+                return jsonify({"msg": "Email sudah terdaftar!"}), 400
+
+            hashed_pw = generate_password_hash(password)
+            c.execute('INSERT INTO users (email, password) VALUES (%s, %s)', (email, hashed_pw))
+            user_id = c.lastrowid
+            
+            c.execute('INSERT INTO profiles (user_id, nama, jenis_program) VALUES (%s, %s, %s)', 
+                      (user_id, email.split('@')[0], 'cutting'))
+            conn.commit()
+        conn.close()
+        return jsonify({"msg": "Registrasi berhasil!", "user": {"id": user_id, "email": email}}), 200
+    except Exception as e:
+        return jsonify({"msg": f"Error Database: {str(e)}"}), 500
+
+@app.route('/api/login', methods=['POST'])
+def login():
+    data = request.json
+    email = data.get('email')
+    password = data.get('password')
+
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as c:
+            c.execute('SELECT * FROM users WHERE email = %s', (email,))
+            user = c.fetchone()
+        conn.close()
+
+        if user and check_password_hash(user['password'], password):
+            return jsonify({"msg": "Login Sukses", "user": {"id": user['id'], "email": user['email']}}), 200
+        return jsonify({"msg": "Email atau Password salah!"}), 401
+    except Exception as e:
+        return jsonify({"msg": f"Error Database: {str(e)}"}), 500
+
+@app.route('/api/profile/<int:uid>', methods=['GET', 'POST'])
+def handle_profile(uid):
+    conn = get_db_connection()
+    if request.method == 'GET':
+        with conn.cursor() as c:
+            c.execute('SELECT * FROM profiles WHERE user_id = %s', (uid,))
+            profile = c.fetchone()
+        conn.close()
+        return jsonify(profile) if profile else jsonify({"error": "Profile not found"})
+    
+    if request.method == 'POST':
+        data = request.json
+        with conn.cursor() as c:
+            c.execute('''UPDATE profiles SET nama=%s, usia=%s, gender=%s, tb=%s, bb=%s, jenis_program=%s, target_bb=%s, program_start_date=%s, foto_profil=%s WHERE user_id=%s''',
+                         (data.get('nama'), data.get('usia'), data.get('gender'), data.get('tb'), data.get('bb'), data.get('jenis_program'), data.get('target_bb'), data.get('program_start_date'), data.get('foto_profil'), uid))
+            conn.commit()
+        conn.close()
+        return jsonify({"msg": "Profile updated"})
+
+@app.route('/api/plan/<int:uid>', methods=['GET', 'POST'])
+def handle_plan(uid):
+    conn = get_db_connection()
+    if request.method == 'GET':
+        with conn.cursor() as c:
+            c.execute('SELECT * FROM plans WHERE user_id = %s', (uid,))
+            plans = c.fetchall()
+        conn.close()
+        return jsonify(plans)
+    
+    if request.method == 'POST':
+        data = request.json
+        tanggal = data.get('tanggal')
+        with conn.cursor() as c:
+            c.execute('SELECT * FROM plans WHERE user_id = %s AND tanggal = %s', (uid, tanggal))
+            existing = c.fetchone()
+            selesai = 1 if data.get('selesai') else 0
+            if existing:
+                c.execute('''UPDATE plans SET olahraga=%s, jam_mulai=%s, selesai=%s, durasi=%s, jarak=%s, kalori_bakar=%s, foto_bukti=%s WHERE user_id=%s AND tanggal=%s''',
+                             (data.get('olahraga'), data.get('jam_mulai'), selesai, data.get('durasi'), data.get('jarak'), data.get('kalori_bakar'), data.get('foto_bukti'), uid, tanggal))
+            else:
+                c.execute('''INSERT INTO plans (user_id, tanggal, olahraga, jam_mulai, selesai, durasi, jarak, kalori_bakar, foto_bukti) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)''',
+                             (uid, tanggal, data.get('olahraga'), data.get('jam_mulai'), selesai, data.get('durasi'), data.get('jarak'), data.get('kalori_bakar'), data.get('foto_bukti')))
+            conn.commit()
+        conn.close()
+        return jsonify({"msg": "Plan updated"})
+
+@app.route('/api/food/<int:uid>', methods=['GET', 'POST'])
+def handle_food(uid):
+    conn = get_db_connection()
+    if request.method == 'GET':
+        tanggal = request.args.get('tanggal')
+        with conn.cursor() as c:
+            c.execute('SELECT * FROM foods WHERE user_id = %s AND tanggal = %s', (uid, tanggal))
+            foods = c.fetchall()
+        conn.close()
+        return jsonify(foods)
+    
+    if request.method == 'POST':
+        data = request.json
+        with conn.cursor() as c:
+            c.execute('INSERT INTO foods (user_id, tanggal, kategori, nama_makanan, kalori) VALUES (%s,%s,%s,%s,%s)',
+                         (uid, data.get('tanggal'), data.get('kategori'), data.get('nama_makanan'), data.get('kalori')))
+            conn.commit()
+        conn.close()
+        return jsonify({"msg": "Food added"})
+
+if __name__ == '__main__':
+    port = int(os.environ.get("PORT", 5000))
+    app.run(debug=False, host='0.0.0.0', port=port)
