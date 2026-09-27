@@ -1,261 +1,212 @@
-<!DOCTYPE html>
-<html lang="id">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>FitCommit — Neural Studio Edition</title>
-    
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&display=swap" rel="stylesheet" />
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+import os
+from flask import Flask, render_template, request, jsonify
+from flask_cors import CORS
+import pymysql
+import pymysql.cursors
+from werkzeug.security import generate_password_hash, check_password_hash
 
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-</head>
-<body class="relative flex justify-center min-h-screen select-none">
+app = Flask(__name__)
+CORS(app)
 
-    <div class="ambient-glow -top-32 left-1/4"></div>
-    <div class="ambient-glow bottom-0 right-1/4"></div>
+# Konfigurasi Database (Mendukung Environment Variables dari Cloud Hosting)
+DB_HOST = os.environ.get("DB_HOST", "localhost")
+DB_USER = os.environ.get("DB_USER", "root")
+DB_PASSWORD = os.environ.get("DB_PASSWORD", "")
+DB_NAME = os.environ.get("DB_NAME", "fitcommit_db")
+DB_PORT = int(os.environ.get("DB_PORT", 3306))
 
-    <!-- Background Video diperbaiki dengan preload="metadata" agar tidak infinite loading -->
-    <div class="video-layer" aria-hidden="true">
-        <video id="scrubVideo" muted playsinline preload="metadata" src="https://d8j0ntlcm91z4.cloudfront.net/user_38xzZboKViGWJOttwIXH07lWA1P/hf_20260908_073327_03643c0a-db33-417a-ae8f-4a39259c7f9c.mp4"></video>
-    </div>
+def get_base_connection():
+    return pymysql.connect(
+        host=DB_HOST,
+        user=DB_USER,
+        password=DB_PASSWORD,
+        port=DB_PORT,
+        cursorclass=pymysql.cursors.DictCursor
+    )
 
-    <div id="toast-container" class="fixed top-14 left-1/2 -translate-x-1/2 w-11/12 max-w-sm z-[200] flex flex-col gap-2 pointer-events-none"></div>
-
-    <!-- LAYER LOGIN / REGISTER -->
-    <div id="login-layer" class="fixed inset-0 bg-[#07090e]/95 backdrop-blur-3xl z-[150] flex flex-col items-center justify-center p-6 transition-opacity duration-300">
-        <div class="w-full max-w-sm glass-card p-8 text-center shadow-[0_0_40px_rgba(139,92,246,0.15)] relative overflow-hidden">
-            <div class="absolute -top-10 -right-10 w-32 h-32 bg-purple-600/20 blur-3xl rounded-full"></div>
+def init_db():
+    try:
+        conn = get_base_connection()
+        with conn.cursor() as c:
+            c.execute(f"CREATE DATABASE IF NOT EXISTS {DB_NAME}")
+            c.execute(f"USE {DB_NAME}")
             
-            <div class="w-14 h-14 bg-white/5 border border-white/10 text-purple-400 rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-lg"><i class="fas fa-bolt text-2xl"></i></div>
-            <h1 class="font-headline text-3xl text-white mb-1">FitCommit</h1>
-            <p class="text-slate-400 mb-6 text-[10px] font-bold uppercase tracking-[0.2em]">Neural Access</p>
+            c.execute('''CREATE TABLE IF NOT EXISTS users (
+                            id INT AUTO_INCREMENT PRIMARY KEY, 
+                            email VARCHAR(255) UNIQUE, 
+                            password VARCHAR(255)
+                        )''')
+            c.execute('''CREATE TABLE IF NOT EXISTS profiles (
+                            user_id INT PRIMARY KEY, 
+                            nama VARCHAR(255), 
+                            usia INT, 
+                            gender VARCHAR(10), 
+                            tb FLOAT, 
+                            bb FLOAT, 
+                            jenis_program VARCHAR(50), 
+                            target_bb FLOAT, 
+                            program_start_date VARCHAR(50), 
+                            foto_profil LONGTEXT
+                        )''')
+            c.execute('''CREATE TABLE IF NOT EXISTS plans (
+                            id INT AUTO_INCREMENT PRIMARY KEY, 
+                            user_id INT, 
+                            tanggal VARCHAR(50), 
+                            olahraga VARCHAR(100), 
+                            jam_mulai VARCHAR(20), 
+                            selesai BOOLEAN, 
+                            durasi FLOAT, 
+                            jarak FLOAT, 
+                            kalori_bakar INT, 
+                            foto_bukti LONGTEXT
+                        )''')
+            c.execute('''CREATE TABLE IF NOT EXISTS foods (
+                            id INT AUTO_INCREMENT PRIMARY KEY, 
+                            user_id INT, 
+                            tanggal VARCHAR(50), 
+                            kategori VARCHAR(50), 
+                            nama_makanan VARCHAR(255), 
+                            kalori INT
+                        )''')
+            conn.commit()
+        conn.close()
+    except Exception as e:
+        print("Error Inisialisasi Database:", e)
+
+init_db()
+
+def get_db_connection():
+    return pymysql.connect(
+        host=DB_HOST,
+        user=DB_USER,
+        password=DB_PASSWORD,
+        database=DB_NAME,
+        port=DB_PORT,
+        cursorclass=pymysql.cursors.DictCursor
+    )
+
+# --- (Sisa endpoint route app.route tetap sama seperti sebelumnya) ---
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+@app.route('/api/register', methods=['POST'])
+def register():
+    data = request.json
+    email = data.get('email')
+    password = data.get('password')
+    confirm = data.get('confirm_password')
+
+    if not email or not password:
+        return jsonify({"msg": "Email dan password wajib diisi!"}), 400
+    if password != confirm:
+        return jsonify({"msg": "Konfirmasi password tidak cocok!"}), 400
+
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as c:
+            c.execute('SELECT * FROM users WHERE email = %s', (email,))
+            if c.fetchone():
+                conn.close()
+                return jsonify({"msg": "Email sudah terdaftar!"}), 400
+
+            hashed_pw = generate_password_hash(password)
+            c.execute('INSERT INTO users (email, password) VALUES (%s, %s)', (email, hashed_pw))
+            user_id = c.lastrowid
             
-            <div class="flex bg-white/5 p-1 rounded-full mb-6 border border-white/10">
-                <button id="tab-login-btn" onclick="switchAuthTab('login')" class="flex-1 py-2 text-xs font-bold rounded-full bg-white text-black transition">Masuk</button>
-                <button id="tab-register-btn" onclick="switchAuthTab('register')" class="flex-1 py-2 text-xs font-bold rounded-full text-slate-400 transition">Daftar</button>
-            </div>
+            c.execute('INSERT INTO profiles (user_id, nama, jenis_program) VALUES (%s, %s, %s)', 
+                      (user_id, email.split('@')[0], 'cutting'))
+            conn.commit()
+        conn.close()
+        return jsonify({"msg": "Registrasi berhasil!", "user": {"id": user_id, "email": email}}), 200
+    except Exception as e:
+        return jsonify({"msg": f"Error Database: {str(e)}"}), 500
 
-            <div id="form-login">
-                <input type="email" id="login-email" placeholder="Email" class="w-full rounded-2xl px-4 py-3.5 mb-3 text-sm font-semibold transition placeholder-slate-500">
-                <input type="password" id="login-password" placeholder="Password" class="w-full rounded-2xl px-4 py-3.5 mb-5 text-sm font-semibold transition placeholder-slate-500">
-                <button onclick="prosesLogin()" class="w-full bg-purple-500 hover:bg-purple-400 text-white font-headline text-sm py-3.5 rounded-full shadow-[0_0_20px_rgba(168,85,247,0.4)] active:scale-95 transition-all">Masuk Sistem</button>
-            </div>
+@app.route('/api/login', methods=['POST'])
+def login():
+    data = request.json
+    email = data.get('email')
+    password = data.get('password')
 
-            <div id="form-register" class="hidden">
-                <input type="email" id="reg-email" placeholder="Email" class="w-full rounded-2xl px-4 py-3 mb-3 text-sm font-semibold transition placeholder-slate-500">
-                <input type="password" id="reg-password" placeholder="Password" class="w-full rounded-2xl px-4 py-3 mb-3 text-sm font-semibold transition placeholder-slate-500">
-                <input type="password" id="reg-confirm" placeholder="Konfirmasi Password" class="w-full rounded-2xl px-4 py-3 mb-5 text-sm font-semibold transition placeholder-slate-500">
-                <button onclick="prosesRegister()" class="w-full bg-white text-black hover:bg-slate-200 font-headline text-sm py-3.5 rounded-full shadow-[0_0_20px_rgba(255,255,255,0.2)] active:scale-95 transition-all">Buat Akun Baru</button>
-            </div>
-        </div>
-    </div>
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as c:
+            c.execute('SELECT * FROM users WHERE email = %s', (email,))
+            user = c.fetchone()
+        conn.close()
 
-    <!-- MODAL OLAHRAGA -->
-    <div id="modal-sport" class="fixed inset-0 bg-[#07090e]/80 backdrop-blur-md z-[100] hidden flex items-end sm:items-center justify-center p-0 sm:p-4">
-        <div class="glass-card w-full max-w-sm rounded-t-[2.5rem] sm:rounded-3xl p-6 border-b-0 sm:border-b">
-            <div class="flex justify-between items-center mb-6 pb-4 border-b border-white/10">
-                <h3 class="font-headline text-lg text-white">Pilih Aktivitas ⚡</h3>
-                <button onclick="document.getElementById('modal-sport').classList.add('hidden')" class="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center text-slate-400 hover:text-white transition"><i class="fas fa-times"></i></button>
-            </div>
-            <div id="sport-grid" class="grid grid-cols-3 gap-3 mb-6 max-h-60 overflow-y-auto hide-scroll"></div>
-            <div class="flex gap-2">
-                <input type="text" id="manual-sport-name" placeholder="Aktivitas lain..." class="w-full rounded-xl px-4 py-3 text-sm font-medium transition">
-                <button onclick="pilihOlahragaManual()" class="bg-purple-500 text-white px-5 rounded-xl font-bold text-sm">Add</button>
-            </div>
-        </div>
-    </div>
+        if user and check_password_hash(user['password'], password):
+            return jsonify({"msg": "Login Sukses", "user": {"id": user['id'], "email": user['email']}}), 200
+        return jsonify({"msg": "Email atau Password salah!"}), 401
+    except Exception as e:
+        return jsonify({"msg": f"Error Database: {str(e)}"}), 500
 
-    <!-- MAIN APP -->
-    <div class="app-container w-full max-w-md relative pb-32 flex flex-col min-h-screen z-20">
-        <header class="w-full px-6 py-4 flex items-center justify-between border-b border-white/5 backdrop-blur-[2px] sticky top-0 z-40 bg-black/20">
-            <div class="flex items-center gap-3">
-                <span class="relative flex h-2.5 w-2.5"><span class="pulse-dot absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span><span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span></span>
-                <div>
-                    <span class="text-[9px] font-extrabold uppercase tracking-widest text-emerald-400 block -mb-1">Live Sync</span>
-                    <h1 id="header-title" class="font-headline text-lg text-white">Beranda</h1>
-                </div>
-            </div>
-            <div class="flex items-center gap-4">
-                <div class="hidden sm:flex items-center gap-2 text-[10px] text-slate-400 font-bold uppercase tracking-widest"><span id="clock-ticker">--:-- WIB</span></div>
-                <img src="" id="header-avatar" class="w-9 h-9 rounded-full border border-white/20 object-cover bg-white/5">
-            </div>
-        </header>
+@app.route('/api/profile/<int:uid>', methods=['GET', 'POST'])
+def handle_profile(uid):
+    conn = get_db_connection()
+    if request.method == 'GET':
+        with conn.cursor() as c:
+            c.execute('SELECT * FROM profiles WHERE user_id = %s', (uid,))
+            profile = c.fetchone()
+        conn.close()
+        return jsonify(profile) if profile else jsonify({"error": "Profile not found"})
+    
+    if request.method == 'POST':
+        data = request.json
+        with conn.cursor() as c:
+            c.execute('''UPDATE profiles SET nama=%s, usia=%s, gender=%s, tb=%s, bb=%s, jenis_program=%s, target_bb=%s, program_start_date=%s, foto_profil=%s WHERE user_id=%s''',
+                         (data.get('nama'), data.get('usia'), data.get('gender'), data.get('tb'), data.get('bb'), data.get('jenis_program'), data.get('target_bb'), data.get('program_start_date'), data.get('foto_profil'), uid))
+            conn.commit()
+        conn.close()
+        return jsonify({"msg": "Profile updated"})
 
-        <main class="flex-1 px-5 py-6 relative z-30">
-            <!-- 1. BERANDA -->
-            <section id="view-home" class="view-section active">
-                <div class="glass-card p-6 text-center mb-6 relative overflow-hidden">
-                    <div class="flex justify-between items-center mb-6">
-                        <div class="studio-pill"><span class="text-[10px]">✦</span><span>energy core</span></div>
-                        <span id="waktu-tanggal" class="text-[10px] font-bold text-slate-300 bg-white/5 px-3 py-1.5 rounded-full border border-white/10">--</span>
-                    </div>
-                    <div class="relative flex justify-center items-center py-4">
-                        <svg viewBox="0 0 36 36" class="w-56 h-56 drop-shadow-2xl">
-                            <defs><linearGradient id="emeraldGradient" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#a855f7" /><stop offset="100%" stop-color="#3b82f6" /></linearGradient></defs>
-                            <path class="circle-bg" d="M18 2 a 16 16 0 0 1 0 32 a 16 16 0 0 1 0 -32"/><path id="circle-progress" class="circle" stroke-dasharray="0, 100" d="M18 2 a 16 16 0 0 1 0 32 a 16 16 0 0 1 0 -32"/>
-                        </svg>
-                        <div class="absolute flex flex-col items-center">
-                            <span id="home-sisa" class="font-headline text-5xl text-white tracking-tighter">0</span>
-                            <span id="home-sisa-label" class="text-[10px] font-bold text-slate-400 uppercase mt-2 tracking-[0.2em]">Sisa Kkal</span>
-                        </div>
-                    </div>
-                    <div class="grid grid-cols-3 gap-3 mt-8 pt-5 border-t border-white/5 relative">
-                        <div class="bg-white/5 p-4 rounded-2xl border border-white/5"><span class="text-[9px] text-slate-500 font-extrabold block mb-1 uppercase tracking-wider">Target</span><span id="home-target" class="font-headline text-white text-base">0</span></div>
-                        <div class="bg-purple-900/20 p-4 rounded-2xl border border-purple-500/20"><span class="text-[9px] text-purple-400 font-extrabold block mb-1 uppercase tracking-wider">Masuk</span><span id="home-masuk" class="font-headline text-purple-300 text-base">0</span></div>
-                        <div class="bg-amber-900/20 p-4 rounded-2xl border border-amber-500/20"><span class="text-[9px] text-amber-400 font-extrabold block mb-1 uppercase tracking-wider">Bakar</span><span id="home-bakar" class="font-headline text-amber-300 text-base">0</span></div>
-                    </div>
-                </div>
-            </section>
+@app.route('/api/plan/<int:uid>', methods=['GET', 'POST'])
+def handle_plan(uid):
+    conn = get_db_connection()
+    if request.method == 'GET':
+        with conn.cursor() as c:
+            c.execute('SELECT * FROM plans WHERE user_id = %s', (uid,))
+            plans = c.fetchall()
+        conn.close()
+        return jsonify(plans)
+    
+    if request.method == 'POST':
+        data = request.json
+        tanggal = data.get('tanggal')
+        with conn.cursor() as c:
+            c.execute('SELECT * FROM plans WHERE user_id = %s AND tanggal = %s', (uid, tanggal))
+            existing = c.fetchone()
+            selesai = 1 if data.get('selesai') else 0
+            if existing:
+                c.execute('''UPDATE plans SET olahraga=%s, jam_mulai=%s, selesai=%s, durasi=%s, jarak=%s, kalori_bakar=%s, foto_bukti=%s WHERE user_id=%s AND tanggal=%s''',
+                             (data.get('olahraga'), data.get('jam_mulai'), selesai, data.get('durasi'), data.get('jarak'), data.get('kalori_bakar'), data.get('foto_bukti'), uid, tanggal))
+            else:
+                c.execute('''INSERT INTO plans (user_id, tanggal, olahraga, jam_mulai, selesai, durasi, jarak, kalori_bakar, foto_bukti) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)''',
+                             (uid, tanggal, data.get('olahraga'), data.get('jam_mulai'), selesai, data.get('durasi'), data.get('jarak'), data.get('kalori_bakar'), data.get('foto_bukti')))
+            conn.commit()
+        conn.close()
+        return jsonify({"msg": "Plan updated"})
 
-            <!-- 2. RENCANA -->
-            <section id="view-plan" class="view-section">
-                <div id="ui-kunci-target" class="glass-card p-8 text-center mb-6 hidden">
-                    <div class="w-16 h-16 bg-white/10 text-white rounded-full flex items-center justify-center mx-auto mb-6 border border-white/20"><i class="fas fa-flag-checkered text-2xl"></i></div>
-                    <h2 class="font-headline text-2xl text-white mb-3">Inisialisasi Misi</h2>
-                    <p class="text-sm text-slate-400 font-medium mb-8">Tentukan target berat badan untuk membuka protokol 7 Hari.</p>
-                    <input type="number" step="0.1" id="input-target-bb-awal" placeholder="Target BB (Kg)" class="w-full rounded-2xl px-5 py-4 text-center font-headline text-xl mb-5 transition">
-                    <button onclick="simpanTargetBBAwal()" class="w-full bg-white text-black hover:bg-slate-200 font-headline py-4 rounded-full text-sm">Kunci Target & Mulai</button>
-                </div>
+@app.route('/api/food/<int:uid>', methods=['GET', 'POST'])
+def handle_food(uid):
+    conn = get_db_connection()
+    if request.method == 'GET':
+        tanggal = request.args.get('tanggal')
+        with conn.cursor() as c:
+            c.execute('SELECT * FROM foods WHERE user_id = %s AND tanggal = %s', (uid, tanggal))
+            foods = c.fetchall()
+        conn.close()
+        return jsonify(foods)
+    
+    if request.method == 'POST':
+        data = request.json
+        with conn.cursor() as c:
+            c.execute('INSERT INTO foods (user_id, tanggal, kategori, nama_makanan, kalori) VALUES (%s,%s,%s,%s,%s)',
+                         (uid, data.get('tanggal'), data.get('kategori'), data.get('nama_makanan'), data.get('kalori')))
+            conn.commit()
+        conn.close()
+        return jsonify({"msg": "Food added"})
 
-                <div id="ui-jadwal-aktif" class="hidden">
-                    <div class="glass-card overflow-hidden mb-6">
-                        <div class="bg-white/5 border-b border-white/5 p-5 flex justify-between items-center">
-                            <div><h3 class="font-headline text-base text-white">Jadwal Misi Mingguan</h3><p class="text-[10px] text-slate-400 mt-1 tracking-widest uppercase font-bold">Protokol Aktif</p></div><span class="w-2.5 h-2.5 bg-emerald-400 rounded-full animate-ping"></span>
-                        </div>
-                        
-                        <div id="day-picker" class="flex gap-2.5 overflow-x-auto hide-scroll p-5 border-b border-white/5 bg-black/20"></div>
-                        
-                        <div class="p-6">
-                            <div class="flex justify-between items-center mb-6">
-                                <h3 id="selected-day-title" class="font-headline text-xl text-white">Tanggal</h3><span id="badge-status-hari" class="text-[10px] font-extrabold px-4 py-1.5 rounded-full uppercase tracking-wider">Status</span>
-                            </div>
-                            
-                            <div id="pesan-masa-depan" class="hidden text-center py-10"><div class="w-12 h-12 bg-white/5 rounded-full flex items-center justify-center mx-auto mb-4 text-slate-500 border border-white/10"><i class="fas fa-lock text-lg"></i></div><p class="text-xs font-medium text-slate-500">Akses ditolak.</p></div>
-
-                            <div id="area-interaksi-hari">
-                                <div id="fase-perencanaan" class="hidden">
-                                    <button onclick="document.getElementById('modal-sport').classList.remove('hidden')" class="w-full bg-white/5 border border-white/10 rounded-2xl p-5 flex justify-between items-center mb-4 hover:border-purple-500/50 hover:bg-white/10 transition group"><span id="sport-name-display" class="font-bold text-slate-300 text-sm">Pilih Aktivitas Latihan</span><i class="fas fa-chevron-right text-slate-500 text-xs"></i></button>
-                                    <div id="form-jam-berangkat" class="mb-6"><input type="time" id="plan-time-setup" class="w-full rounded-2xl px-5 py-4 font-bold text-center text-sm transition"></div>
-                                    <button onclick="simpanRencanaMingguan()" class="w-full bg-purple-500 text-white font-headline py-4 rounded-full text-sm">Simpan Jadwal</button>
-                                </div>
-
-                                <div id="fase-evaluasi" class="hidden">
-                                    <div class="mb-6 border border-sky-500/30 bg-sky-950/20 rounded-3xl overflow-hidden p-5 shadow-inner">
-                                        <div class="flex justify-between items-center mb-4">
-                                            <span class="font-bold text-xs text-sky-400 flex items-center gap-2 tracking-wide"><i class="fas fa-satellite-dish"></i> GPS Tracker</span>
-                                            <button id="btn-toggle-track" onclick="toggleLiveTracking()" class="bg-sky-500 text-white text-[10px] font-extrabold px-5 py-2.5 rounded-full transition-all">Mulai Radar</button>
-                                        </div>
-                                        <div id="map-frame" class="hidden mb-4"></div>
-                                        <div id="live-stats-row" class="hidden grid grid-cols-3 bg-black/40 p-4 rounded-2xl text-sky-500/70 font-bold text-[10px] text-center border border-white/5 uppercase tracking-widest">
-                                            <div><span id="live-timer-display" class="block text-lg text-sky-100 font-headline normal-case tracking-normal mb-0.5">00:00</span>Mnt</div>
-                                            <div><span id="live-dist-display" class="block text-lg text-sky-100 font-headline normal-case tracking-normal mb-0.5">0.00</span>Km</div>
-                                            <div><span id="live-pace-display" class="block text-lg text-sky-100 font-headline normal-case tracking-normal mb-0.5">-:--</span>Pace</div>
-                                        </div>
-                                    </div>
-
-                                    <div class="grid grid-cols-2 gap-4 mb-5">
-                                        <div><label class="text-[9px] font-extrabold text-slate-500 uppercase tracking-widest block mb-2">Durasi (Mnt)</label><input type="number" id="eval-duration" oninput="hitungKaloriEvaluasi()" class="w-full rounded-2xl px-4 py-4 font-bold text-center text-sm"></div>
-                                        <div><label class="text-[9px] font-extrabold text-slate-500 uppercase tracking-widest block mb-2">Jarak (Km)</label><input type="number" id="eval-distance" oninput="hitungKaloriEvaluasi()" class="w-full rounded-2xl px-4 py-4 font-bold text-center text-sm"></div>
-                                    </div>
-                                    <div class="bg-amber-950/30 border border-amber-500/20 rounded-2xl p-5 flex justify-between items-center mb-6">
-                                        <span class="text-[10px] font-extrabold uppercase tracking-widest text-amber-500">Est. Bakar</span><span id="eval-cal" class="font-headline text-amber-400 text-lg">0 Kkal</span>
-                                    </div>
-
-                                    <label class="block w-full border-2 border-dashed border-white/20 bg-white/5 hover:bg-white/10 hover:border-purple-500/50 rounded-2xl p-6 text-center cursor-pointer mb-5 group">
-                                        <input type="file" id="eval-photo" accept="image/*" onchange="previewFotoHarian(event)" class="hidden">
-                                        <span class="text-xs font-bold text-slate-400 group-hover:text-purple-300 flex items-center justify-center gap-2 transition"><i class="fas fa-camera text-lg"></i> Upload Bukti Visual</span>
-                                    </label>
-                                    <img id="photo-preview-input" class="hidden w-full rounded-2xl border border-white/10 mb-5 object-cover max-h-48 opacity-90">
-                                    
-                                    <button id="btn-submit-eval" onclick="simpanEvaluasiHarian()" disabled class="w-full bg-white/10 text-slate-400 font-bold py-4 rounded-full text-sm">Kunci Tugas Harian</button>
-                                </div>
-
-                                <div id="fase-terkunci" class="hidden">
-                                    <div class="bg-white/5 rounded-2xl p-5 border border-white/10 mb-5 space-y-4">
-                                        <div class="flex justify-between items-center"><span class="text-[10px] uppercase tracking-widest font-bold text-slate-500">Durasi/Jarak</span><span id="resume-durjar" class="font-headline text-white text-base">-</span></div>
-                                        <div class="flex justify-between items-center"><span class="text-[10px] uppercase tracking-widest font-bold text-slate-500">Kalori/Pace</span><span id="resume-kalpace" class="font-headline text-purple-400 text-base">-</span></div>
-                                    </div>
-                                    <img id="photo-preview-locked" class="w-full rounded-2xl border border-white/10 object-cover max-h-64 opacity-90 grayscale-[30%]">
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <button id="btn-trigger-finish" onclick="validasiGarisFinish()" class="w-full bg-gradient-to-r from-amber-400 to-orange-500 text-black font-headline py-4 rounded-full shadow-[0_0_20px_rgba(245,158,11,0.4)] mb-6 hidden text-sm"><i class="fas fa-trophy mr-2"></i> Eksekusi Garis Finish!</button>
-
-                <div id="ui-evaluasi-akhir" class="glass-card p-8 mb-6 hidden text-center border-emerald-500/30 bg-emerald-950/20">
-                    <h3 class="font-headline text-2xl text-white mb-2">Siklus 7 Hari Selesai 🎉</h3>
-                    <input type="number" step="0.1" id="input-bb-akhir-minggu" placeholder="BB Aktual (Kg)" class="w-full rounded-2xl px-5 py-4 font-headline text-center text-lg mb-4 mt-6">
-                    <textarea id="input-evaluasi-mingguan" placeholder="Catatan log evaluasi..." class="w-full rounded-2xl p-5 text-sm mb-6" rows="3"></textarea>
-                    <button onclick="selesaikanMingguIni()" class="w-full bg-emerald-500 text-black font-headline py-4 rounded-full text-sm">Mulai Siklus Baru</button>
-                </div>
-            </section>
-
-            <!-- 3. DIARY MAKANAN -->
-            <section id="view-diary" class="view-section">
-                <div class="glass-card overflow-hidden mb-6 p-6 sm:p-8">
-                    <div class="mb-8">
-                        <select id="food-category-select" class="w-full rounded-2xl px-5 py-4 text-sm font-bold transition mb-6 appearance-none">
-                            <option value="sarapan">🍳 Pagi</option><option value="siang">🍱 Siang</option><option value="malam">🍽️ Malam</option><option value="camilan">🍩 Camilan</option>
-                        </select>
-                        <div class="relative mb-5">
-                            <input type="text" id="food-search" placeholder="Cari entri (Cth: Ayam)..." oninput="cariDatabaseMakanan()" class="w-full rounded-2xl px-5 py-4 text-sm font-medium transition placeholder-slate-500">
-                            <div id="food-suggestions" class="hidden absolute w-full bg-[#07090e] border border-white/10 shadow-2xl rounded-2xl mt-2 z-50 max-h-48 overflow-y-auto"></div>
-                        </div>
-                        <div class="flex gap-2">
-                            <input type="text" id="manual-food-name" placeholder="Manual Input" class="w-full rounded-2xl px-5 py-3 text-sm font-medium transition placeholder-slate-500">
-                            <input type="number" id="manual-food-cal" placeholder="Kkal" class="w-24 rounded-2xl px-3 py-3 text-sm font-headline text-center transition placeholder-slate-500">
-                            <button onclick="tambahMakananManual()" class="bg-white text-black w-14 rounded-2xl font-bold"><i class="fas fa-plus"></i></button>
-                        </div>
-                    </div>
-                    <div id="diary-list-container" class="space-y-6 pt-6 border-t border-white/5"></div>
-                </div>
-            </section>
-
-            <!-- 4. PROFIL -->
-            <section id="view-profile" class="view-section">
-                <div class="glass-card p-6 sm:p-8 mb-6">
-                    <div class="flex items-center gap-5 border-b border-white/5 pb-8 mb-8">
-                        <div class="relative"><img src="" id="profil-avatar" class="w-20 h-20 rounded-full border border-white/20 object-cover bg-white/5"><label class="absolute -bottom-1 -right-1 bg-white text-black w-8 h-8 rounded-full flex items-center justify-center cursor-pointer shadow-lg"><input type="file" accept="image/*" class="hidden" onchange="uploadFotoProfil(event)"><i class="fas fa-camera text-sm"></i></label></div>
-                        <div class="flex-1 w-full"><input type="text" id="input-nama" placeholder="Codename" class="w-full font-headline text-2xl text-white bg-transparent border-none outline-none placeholder-slate-600 p-0"><p id="profile-email-display" class="text-[11px] font-bold text-slate-400 mt-1 tracking-widest uppercase">user@neural.net</p></div>
-                    </div>
-                    
-                    <h3 class="font-headline text-sm text-white mb-5">Konfigurasi Fisik</h3>
-                    <div class="mb-5">
-                        <select id="input-jenis-program" onchange="hitungOtomatisKalori()" class="w-full rounded-2xl px-5 py-4 text-sm font-bold transition appearance-none"><option value="cutting">🔥 Cutting</option><option value="bulking">💪 Bulking</option><option value="maintenance">⚖️ Maintenance</option></select>
-                    </div>
-                    <div class="grid grid-cols-2 gap-4 mb-8">
-                        <div><label class="text-[9px] font-extrabold text-slate-500 uppercase tracking-widest block mb-2">Usia</label><input type="number" id="input-usia" oninput="hitungOtomatisKalori()" class="w-full rounded-2xl px-4 py-4 font-bold text-center text-sm transition"></div>
-                        <div><label class="text-[9px] font-extrabold text-slate-500 uppercase tracking-widest block mb-2">Gender</label><select id="input-gender" onchange="hitungOtomatisKalori()" class="w-full rounded-2xl px-4 py-4 font-bold text-center text-sm transition appearance-none"><option value="L">Pria</option><option value="P">Wanita</option></select></div>
-                        <div><label class="text-[9px] font-extrabold text-slate-500 uppercase tracking-widest block mb-2">Tinggi (cm)</label><input type="number" id="input-tb" oninput="hitungOtomatisKalori()" class="w-full rounded-2xl px-4 py-4 font-bold text-center text-sm transition"></div>
-                        <div><label class="text-[9px] font-extrabold text-slate-500 uppercase tracking-widest block mb-2">Berat (kg)</label><input type="number" id="input-bb" oninput="hitungOtomatisKalori()" class="w-full rounded-2xl px-4 py-4 font-bold text-center text-sm transition"></div>
-                    </div>
-                    
-                    <button onclick="simpanProfilAkun()" class="w-full bg-white text-black font-headline py-4 rounded-full text-sm mb-4">Simpan Konfigurasi</button>
-                    <button onclick="logout()" class="w-full bg-transparent text-rose-400 font-bold py-4 rounded-full text-sm border border-rose-500/30">Logout Sistem</button>
-                </div>
-            </section>
-        </main>
-
-        <div class="fixed bottom-0 w-full max-w-md pointer-events-none z-50 flex justify-center pb-6 px-6">
-            <nav class="w-full bg-[#07090e]/80 backdrop-blur-2xl border border-white/10 flex justify-around p-3 rounded-full shadow-[0_20px_40px_rgba(0,0,0,0.8)] pointer-events-auto">
-                <button onclick="switchView('home', 'Beranda', this)" class="nav-btn text-white flex items-center justify-center gap-2 px-4 py-2.5 rounded-full"><i class="fas fa-home text-sm"></i><span class="text-[11px] font-bold tracking-wide">Home</span></button>
-                <button onclick="switchView('plan', 'Rencana', this)" class="nav-btn text-slate-500 flex items-center justify-center gap-2 px-4 py-2.5 rounded-full"><i class="fas fa-bolt text-sm"></i><span class="text-[11px] font-bold tracking-wide">Plan</span></button>
-                <button onclick="switchView('diary', 'Jurnal', this)" class="nav-btn text-slate-500 flex items-center justify-center gap-2 px-4 py-2.5 rounded-full"><i class="fas fa-database text-sm"></i><span class="text-[11px] font-bold tracking-wide">Diary</span></button>
-                <button onclick="switchView('profile', 'Profil', this)" class="nav-btn text-slate-500 flex items-center justify-center gap-2 px-4 py-2.5 rounded-full"><i class="fas fa-user-astronaut text-sm"></i><span class="text-[11px] font-bold tracking-wide">User</span></button>
-            </nav>
-        </div>
-    </div>
-
-    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
-    <script src="{{ url_for('static', filename='js/gaze-tracking.js') }}"></script>
-</body>
-</html>
+if __name__ == '__main__':
+    port = int(os.environ.get("PORT", 5000))
+    app.run(debug=False, host='0.0.0.0', port=port)
